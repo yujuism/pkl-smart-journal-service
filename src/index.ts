@@ -17,17 +17,22 @@ import companyRoutes from './routes/companies.ts'
 const app = new Hono()
 
 app.use('*', logger())
-app.use('*', cors({
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:5174',
-    process.env.STUDENT_APP_URL ?? '',
-    process.env.TEACHER_PORTAL_URL ?? '',
-  ].filter(Boolean),
-  credentials: true,
-}))
+app.use(
+  '*',
+  cors({
+    origin: [
+      'http://localhost:5173',
+      'http://localhost:5174',
+      process.env.STUDENT_APP_URL ?? '',
+      process.env.TEACHER_PORTAL_URL ?? '',
+    ].filter(Boolean),
+    credentials: true,
+  }),
+)
 
-app.get('/', (c) => c.json({ status: 'PKL Smart Journal API', version: '1.0.0' }))
+app.get('/', (c) =>
+  c.json({ status: 'PKL Smart Journal API', version: '1.0.0' }),
+)
 
 app.route('/api/auth', authRoutes)
 app.route('/api/journals', journalRoutes)
@@ -43,7 +48,10 @@ app.route('/api/companies', companyRoutes)
 
 app.onError((err, c) => {
   console.error(err)
-  return c.json({ error: (err as Error).message ?? 'Internal server error' }, 500)
+  return c.json(
+    { error: (err as Error).message ?? 'Internal server error' },
+    500,
+  )
 })
 
 const port = parseInt(process.env.PORT ?? '3000')
