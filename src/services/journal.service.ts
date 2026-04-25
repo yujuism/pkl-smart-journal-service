@@ -204,9 +204,9 @@ export const JournalService = {
 
   // Auto-finalize journals where updatedAt > 5 menit lalu dan belum finalized
   async autoFinalizePending() {
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString()
     const rows = await db.select().from(journals).where(
-      sql`finalized_at IS NULL AND updated_at < ${fiveMinutesAgo}`
+      sql`finalized_at IS NULL AND updated_at < ${fiveMinutesAgo}::timestamptz`
     )
     for (const journal of rows) {
       try {
