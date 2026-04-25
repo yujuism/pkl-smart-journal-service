@@ -1,4 +1,4 @@
-import { eq, and, desc, inArray } from 'drizzle-orm'
+import { eq, and, desc, inArray, sql } from 'drizzle-orm'
 import { db } from '../db/index.ts'
 import { journals, students, pklPlacements, users, feedbacks, majors } from '../db/schema/index.ts'
 import { compileJournalEntry } from './ai.ts'
@@ -6,7 +6,7 @@ import { notifyJournalSaved } from './whatsapp.ts'
 
 export type CreateJournalDto = {
   date: string
-  title: string
+  title?: string
   activityRaw: string
   placementId?: string
   photoUrl?: string
@@ -104,18 +104,20 @@ export const JournalService = {
       .where(eq(students.id, studentId)).limit(1)
     if (!student) throw new Error('Student profile not found')
 
-    let aiResult = { activityCompiled: '', newThings: '', obstacle: '', solution: '', rtl: '' }
+    let aiResult = { title: '', activityCompiled: '', newThings: '', obstacle: '', solution: '', rtl: '' }
     try {
-      aiResult = await compileJournalEntry({ title: dto.title, activityRaw: dto.activityRaw, major: student.majorName })
+      aiResult = await compileJournalEntry({ activityRaw: dto.activityRaw, major: student.majorName })
     } catch (e) {
       console.error('AI compile failed:', (e as Error).message)
     }
+
+    const finalTitle = dto.title || aiResult.title || dto.activityRaw.slice(0, 60)
 
     const [journal] = await db.insert(journals).values({
       studentId: student.id,
       placementId: dto.placementId,
       date: dto.date,
-      title: dto.title,
+      title: finalTitle,
       activityRaw: dto.activityRaw,
       activityCompiled: aiResult.activityCompiled || null,
       newThings: aiResult.newThings || null,
@@ -135,12 +137,22 @@ export const JournalService = {
     return journal
   },
 
-  async update(id: string, studentId: string, dto: UpdateJournalDto) {
+  async delete(id: string, studentId: string) {
     const [existing] = await db.select({ id: journals.id }).from(journals)
       .where(and(eq(journals.id, id), eq(journals.studentId, studentId))).limit(1)
     if (!existing) throw new Error('Not found or not authorized')
+    await db.delete(journals).where(eq(journals.id, id))
+  },
 
-    const [updated] = await db.update(journals).set(dto).where(eq(journals.id, id)).returning()
+  async update(id: string, studentId: string, dto: UpdateJournalDto) {
+    const [existing] = await db.select({ id: journals.id, finalizedAt: journals.finalizedAt }).from(journals)
+      .where(and(eq(journals.id, id), eq(journals.studentId, studentId))).limit(1)
+    if (!existing) throw new Error('Not found or not authorized')
+    if (existing.finalizedAt) throw new Error('Jurnal sudah dikunci dan tidak dapat diubah')
+
+    const [updated] = await db.update(journals)
+      .set({ ...dto, updatedAt: new Date() })
+      .where(eq(journals.id, id)).returning()
     return updated
   },
 
@@ -148,22 +160,69 @@ export const JournalService = {
     const [journal] = await db.select().from(journals)
       .where(and(eq(journals.id, id), eq(journals.studentId, studentId))).limit(1)
     if (!journal) throw new Error('Not found')
+    if (journal.finalizedAt) throw new Error('Jurnal sudah dikunci dan tidak dapat diubah')
 
     const [student] = await db.select({ majorName: majors.name })
       .from(students).innerJoin(majors, eq(students.majorId, majors.id))
       .where(eq(students.id, studentId)).limit(1)
 
     const aiResult = await compileJournalEntry({
-      title: journal.title,
       activityRaw: journal.activityRaw,
       major: student.majorName,
     })
 
+    const finalTitle = aiResult.title || journal.title
+
     const [updated] = await db.update(journals)
-      .set({ ...aiResult, aiProcessed: true })
+      .set({ ...aiResult, title: finalTitle, aiProcessed: true, updatedAt: new Date() })
       .where(eq(journals.id, id))
       .returning()
     return updated
+  },
+
+  async finalize(id: string, studentId: string) {
+    const [journal] = await db.select().from(journals)
+      .where(and(eq(journals.id, id), eq(journals.studentId, studentId))).limit(1)
+    if (!journal) throw new Error('Not found')
+    if (journal.finalizedAt) return journal // sudah finalized, idempoten
+
+    const [updated] = await db.update(journals)
+      .set({ finalizedAt: new Date() })
+      .where(eq(journals.id, id)).returning()
+
+    // Trigger WA notif
+    if (journal.placementId) {
+      const [student] = await db.select({ name: users.name })
+        .from(students).innerJoin(users, eq(students.userId, users.id))
+        .where(eq(students.id, studentId)).limit(1)
+      JournalService._notifyPlacement(journal.placementId, student?.name ?? 'Siswa', journal.date, journal.title)
+        .catch(e => console.error('WA notify failed:', (e as Error).message))
+    }
+
+    return updated
+  },
+
+  // Auto-finalize journals where updatedAt > 5 menit lalu dan belum finalized
+  async autoFinalizePending() {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
+    const rows = await db.select().from(journals).where(
+      sql`finalized_at IS NULL AND updated_at < ${fiveMinutesAgo}`
+    )
+    for (const journal of rows) {
+      try {
+        await db.update(journals).set({ finalizedAt: new Date() }).where(eq(journals.id, journal.id))
+        if (journal.placementId) {
+          const [student] = await db.select({ name: users.name })
+            .from(students).innerJoin(users, eq(students.userId, users.id))
+            .where(eq(students.id, journal.studentId)).limit(1)
+          JournalService._notifyPlacement(journal.placementId, student?.name ?? 'Siswa', journal.date, journal.title)
+            .catch(() => {})
+        }
+        console.log(`Auto-finalized journal ${journal.id}`)
+      } catch (e) {
+        console.error(`Failed to auto-finalize ${journal.id}:`, (e as Error).message)
+      }
+    }
   },
 
   async _notifyPlacement(placementId: string, studentName: string, date: string, title: string) {

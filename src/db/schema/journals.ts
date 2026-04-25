@@ -17,6 +17,8 @@ export const journals = pgTable('journals', {
   photoUrl: text('photo_url'),
   aiProcessed: boolean('ai_processed').default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+  finalizedAt: timestamp('finalized_at', { withTimezone: true }),
 }, (t) => [
   unique('journals_student_date_unique').on(t.studentId, t.date),
 ])

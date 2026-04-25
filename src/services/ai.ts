@@ -1,7 +1,6 @@
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import Groq from 'groq-sdk'
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '')
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY ?? '' })
 
 function parseJson<T>(text: string, fallback: T): T {
   try {
@@ -12,7 +11,17 @@ function parseJson<T>(text: string, fallback: T): T {
   }
 }
 
+async function chat(prompt: string): Promise<string> {
+  const res = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.7,
+  })
+  return res.choices[0]?.message?.content ?? ''
+}
+
 export type CompiledJournal = {
+  title: string
   activityCompiled: string
   newThings: string
   obstacle: string
@@ -21,20 +30,19 @@ export type CompiledJournal = {
 }
 
 export async function compileJournalEntry(params: {
-  title: string
   activityRaw: string
   major: string
 }): Promise<CompiledJournal> {
-  const { title, activityRaw, major } = params
+  const { activityRaw, major } = params
   const prompt = `Kamu adalah asisten jurnal PKL SMK. Ubah catatan harian berikut menjadi entri jurnal formal dalam Bahasa Indonesia yang baik dan benar.
 
-Judul/Tema: ${title}
 Jurusan siswa: ${major}
 Catatan mentah siswa:
 "${activityRaw}"
 
 Hasilkan JSON dengan format berikut (tanpa markdown code block):
 {
+  "title": "judul singkat tema kegiatan hari ini (maksimal 8 kata, tanpa tanda kutip)",
   "activityCompiled": "deskripsi kegiatan yang sudah dirapikan dan diformalkan (2-3 paragraf)",
   "newThings": "hal baru yang dipelajari hari ini",
   "obstacle": "kendala yang dihadapi (atau 'Tidak ada kendala berarti' jika tidak ada)",
@@ -42,8 +50,9 @@ Hasilkan JSON dengan format berikut (tanpa markdown code block):
   "rtl": "rencana tindak lanjut untuk hari berikutnya"
 }`
 
-  const result = await model.generateContent(prompt)
-  return parseJson<CompiledJournal>(result.response.text(), {
+  const text = await chat(prompt)
+  return parseJson<CompiledJournal>(text, {
+    title: '',
     activityCompiled: activityRaw,
     newThings: '',
     obstacle: '',
@@ -94,8 +103,8 @@ Hasilkan JSON evaluasi (tanpa markdown code block):
   "competencyScores": { "<nama_kompetensi>": <skor 0-100> }
 }`
 
-  const result = await model.generateContent(prompt)
-  return parseJson<EvaluationResult>(result.response.text(), {
+  const text = await chat(prompt)
+  return parseJson<EvaluationResult>(text, {
     score: 0,
     analysis: 'Evaluasi gagal diproses.',
     recommendation: 'perhatikan',
@@ -116,6 +125,5 @@ ${entries}
 
 Hasilkan ringkasan naratif 1-2 paragraf yang merangkum kegiatan minggu ini, pencapaian, dan hal-hal yang perlu diperhatikan.`
 
-  const result = await model.generateContent(prompt)
-  return result.response.text().trim()
+  return chat(prompt)
 }

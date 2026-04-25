@@ -34,7 +34,7 @@ router.get('/:id', requireAuth('student', 'teacher', 'industry', 'admin'), async
 
 const createSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}/),
-  title: z.string().min(3),
+  title: z.string().optional(),
   activityRaw: z.string().min(10),
   placementId: z.string().uuid().optional(),
   photoUrl: z.string().url().optional(),
@@ -75,6 +75,26 @@ router.post('/:id/compile', requireAuth('student'), async (c) => {
   try {
     const updated = await JournalService.recompile(c.req.param('id') as string, user.studentId!)
     return c.json(updated)
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 404)
+  }
+})
+
+router.post('/:id/finalize', requireAuth('student'), async (c) => {
+  const user = c.get('user')
+  try {
+    const updated = await JournalService.finalize(c.req.param('id') as string, user.studentId!)
+    return c.json(updated)
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+router.delete('/:id', requireAuth('student'), async (c) => {
+  const user = c.get('user')
+  try {
+    await JournalService.delete(c.req.param('id') as string, user.studentId!)
+    return c.json({ success: true })
   } catch (e) {
     return c.json({ error: (e as Error).message }, 404)
   }

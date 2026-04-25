@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 
+import { JournalService } from './services/journal.service.ts'
 import authRoutes from './routes/auth.ts'
 import journalRoutes from './routes/journals.ts'
 import feedbackRoutes from './routes/feedbacks.ts'
@@ -62,3 +63,8 @@ export default {
 }
 
 console.log(`PKL Smart Journal API running on http://localhost:${port}`)
+
+// Cron: tiap menit auto-finalize jurnal yang sudah >5 menit tidak diubah
+setInterval(() => {
+  JournalService.autoFinalizePending().catch(e => console.error('Cron error:', e))
+}, 60 * 1000)

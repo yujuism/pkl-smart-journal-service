@@ -85,8 +85,21 @@ export const PlacementService = {
 
   async listByStudent(studentId: string) {
     return db
-      .select()
+      .select({
+        id: pklPlacements.id,
+        studentId: pklPlacements.studentId,
+        teacherId: pklPlacements.teacherId,
+        industrySupervisorId: pklPlacements.industrySupervisorId,
+        parentId: pklPlacements.parentId,
+        companyId: pklPlacements.companyId,
+        companyName: companies.name,
+        companyAddress: companies.address,
+        startDate: pklPlacements.startDate,
+        endDate: pklPlacements.endDate,
+        status: pklPlacements.status,
+      })
       .from(pklPlacements)
+      .innerJoin(companies, eq(pklPlacements.companyId, companies.id))
       .where(eq(pklPlacements.studentId, studentId))
   },
 
