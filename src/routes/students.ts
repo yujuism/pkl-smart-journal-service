@@ -18,6 +18,12 @@ router.get('/stats', requirePermission('students:read'), async (c) => {
   return c.json(stats)
 })
 
+router.get('/unreviewed-journals', requirePermission('students:read'), async (c) => {
+  const user = c.get('user')
+  const data = await StudentService.getUnreviewedJournals(user)
+  return c.json(data)
+})
+
 router.get('/:id/summary', requirePermission('students:read'), async (c) => {
   const user = c.get('user')
   const studentId = c.req.param('id') as string

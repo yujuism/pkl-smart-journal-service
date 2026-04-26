@@ -203,6 +203,33 @@ export const StudentService = {
     }
   },
 
+  async getUnreviewedJournals(caller: JwtPayload) {
+    const studentRows = await StudentService.listForUser(caller)
+    const studentIds = studentRows.map(s => s.id)
+    if (studentIds.length === 0) return []
+
+    const idList = studentIds.map(id => `'${id}'`).join(',')
+    const rows = await db.execute(sql`
+      SELECT
+        j.id,
+        j.date,
+        j.title,
+        j.student_id AS "studentId",
+        u.name AS "studentName"
+      FROM journals j
+      JOIN students s ON s.id = j.student_id
+      JOIN users u ON u.id = s.user_id
+      WHERE j.student_id = ANY(ARRAY[${sql.raw(idList)}]::uuid[])
+        AND j.finalized_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM feedbacks f
+          WHERE f.journal_id = j.id AND f.reviewer_role = ${caller.role}
+        )
+      ORDER BY j.date DESC
+    `) as any[]
+    return rows as { id: string; date: string; title: string; studentId: string; studentName: string }[]
+  },
+
   async getSummary(studentId: string) {
     const [student] = await db.select({
       id: students.id,
