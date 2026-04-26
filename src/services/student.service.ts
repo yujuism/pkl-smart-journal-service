@@ -13,9 +13,13 @@ export const StudentService = {
       nis: students.nis,
       class: students.class,
       major: majors.name,
+      companyName: companies.name,
+      placementId: pklPlacements.id,
     }).from(students)
       .innerJoin(users, eq(students.userId, users.id))
       .innerJoin(majors, eq(students.majorId, majors.id))
+      .leftJoin(pklPlacements, and(eq(pklPlacements.studentId, students.id), eq(pklPlacements.status, 'active')))
+      .leftJoin(companies, eq(pklPlacements.companyId, companies.id))
   },
 
   async listByTeacher(teacherId: string) {
