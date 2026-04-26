@@ -14,6 +14,12 @@ const schema = z.object({
 })
 
 router.get('/', async (c) => c.json(await CompanyService.list()))
+
+router.get('/with-students', requirePermission('students:read'), async (c) => {
+  const user = c.get('user')
+  const data = await CompanyService.listWithStudents(user)
+  return c.json(data)
+})
 router.post('/', requirePermission('placements:write'), zValidator('json', schema), async (c) => {
   const row = await CompanyService.create(c.req.valid('json'))
   return c.json(row, 201)
