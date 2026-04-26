@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { requirePermission } from '../middleware/auth.ts'
 import { CompanyService } from '../services/company.service.ts'
+import { parsePagination } from '../utils/pagination.ts'
 import type { AppEnv } from '../types.ts'
 
 const router = new Hono<AppEnv>()
@@ -13,7 +14,11 @@ const schema = z.object({
   contactPerson: z.string().optional(),
 })
 
-router.get('/', async (c) => c.json(await CompanyService.list()))
+router.get('/', async (c) => {
+  const pg = parsePagination(c.req.query() as Record<string, string>)
+  const search = c.req.query('search') ?? ''
+  return c.json(await CompanyService.list(pg, search))
+})
 
 router.get('/with-students', requirePermission('students:read'), async (c) => {
   const user = c.get('user')

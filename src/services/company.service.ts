@@ -1,11 +1,23 @@
-import { eq, and } from 'drizzle-orm'
+import { eq, and, ilike, sql } from 'drizzle-orm'
 import { db } from '../db/index.ts'
 import { companies, pklPlacements, students, users, majors } from '../db/schema/index.ts'
 import type { JwtPayload } from '../middleware/auth.ts'
+import type { PaginationQuery, PaginatedResult } from '../utils/pagination.ts'
 
 export const CompanyService = {
-  async list() {
-    return db.select().from(companies).orderBy(companies.name)
+  async list(pg?: PaginationQuery, search = '') {
+    const searchFilter = search ? ilike(companies.name, `%${search}%`) : undefined
+
+    if (!pg) {
+      return db.select().from(companies).where(searchFilter).orderBy(companies.name)
+    }
+
+    const [countRow] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(companies).where(searchFilter)
+    const total = countRow?.count ?? 0
+    const offset = (pg.page - 1) * pg.perPage
+    const data = await db.select().from(companies).where(searchFilter).orderBy(companies.name).limit(pg.perPage).offset(offset)
+    return { data, total, page: pg.page, perPage: pg.perPage, totalPages: Math.ceil(total / pg.perPage) || 1 } as PaginatedResult<typeof data[number]>
   },
   async create(dto: { name: string; address?: string; phone?: string; contactPerson?: string }) {
     const [row] = await db.insert(companies).values(dto).returning()

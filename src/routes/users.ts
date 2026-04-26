@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { requireAuth, requirePermission } from '../middleware/auth.ts'
 import { UserService } from '../services/user.service.ts'
+import { parsePagination } from '../utils/pagination.ts'
 import type { AppEnv } from '../types.ts'
 
 const router = new Hono<AppEnv>()
@@ -10,14 +11,18 @@ const router = new Hono<AppEnv>()
 // Admin: list all users (optionally filtered by role)
 router.get('/', requireAuth('admin'), async (c) => {
   const role = c.req.query('role')
-  const rows = await UserService.listAll(role as string | undefined)
-  return c.json(rows)
+  const search = c.req.query('search') ?? ''
+  const pg = parsePagination(c.req.query() as Record<string, string>)
+  const result = await UserService.listAll(role as string | undefined, pg, search)
+  return c.json(result)
 })
 
 // Admin/approver: list pending users
 router.get('/pending', requirePermission('users:approve'), async (c) => {
-  const rows = await UserService.listPending()
-  return c.json(rows)
+  const search = c.req.query('search') ?? ''
+  const pg = parsePagination(c.req.query() as Record<string, string>)
+  const result = await UserService.listPending(pg, search)
+  return c.json(result)
 })
 
 // Admin/approver: approve pending user

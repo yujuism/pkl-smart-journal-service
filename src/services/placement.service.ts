@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, ilike, or, sql } from 'drizzle-orm'
 import { db } from '../db/index.ts'
 import {
   pklPlacements,
@@ -6,6 +6,7 @@ import {
   users,
   companies,
 } from '../db/schema/index.ts'
+import type { PaginationQuery, PaginatedResult } from '../utils/pagination.ts'
 
 export type CreatePlacementDto = {
   studentId: string
@@ -36,10 +37,13 @@ export type PlacementWithDetails = {
 }
 
 export const PlacementService = {
-  async listAll(): Promise<PlacementWithDetails[]> {
-    // Fetch all placements + student info + company info + all users in two queries
-    const placements = await db
-      .select({
+  async listAll(pg?: PaginationQuery, search = ''): Promise<PlacementWithDetails[] | PaginatedResult<PlacementWithDetails>> {
+    const searchFilter = search
+      ? or(ilike(users.name, `%${search}%`), ilike(companies.name, `%${search}%`), ilike(students.nis, `%${search}%`))
+      : undefined
+
+    const buildRows = async (limit?: number, offset?: number) => {
+      const q = db.select({
         id: pklPlacements.id,
         companyName: companies.name,
         companyAddress: companies.address,
@@ -52,35 +56,49 @@ export const PlacementService = {
         teacherId: pklPlacements.teacherId,
         industrySupervisorId: pklPlacements.industrySupervisorId,
         parentId: pklPlacements.parentId,
-      })
+      }).from(pklPlacements)
+        .innerJoin(students, eq(pklPlacements.studentId, students.id))
+        .innerJoin(companies, eq(pklPlacements.companyId, companies.id))
+        .innerJoin(users, eq(students.userId, users.id))
+        .where(searchFilter)
+        .orderBy(pklPlacements.id)
+      if (limit !== undefined) q.limit(limit)
+      if (offset !== undefined) q.offset(offset)
+      return q
+    }
+
+    const mapRow = (r: any, nameMap: Map<string, string>): PlacementWithDetails => ({
+      id: r.id, companyName: r.companyName, companyAddress: r.companyAddress,
+      startDate: r.startDate, endDate: r.endDate, status: r.status,
+      studentId: r.studentId, studentName: nameMap.get(r.studentUserId) ?? '-', nis: r.nis,
+      teacherId: r.teacherId, teacherName: r.teacherId ? (nameMap.get(r.teacherId) ?? null) : null,
+      industrySupervisorId: r.industrySupervisorId,
+      industrySupervisorName: r.industrySupervisorId ? (nameMap.get(r.industrySupervisorId) ?? null) : null,
+      parentId: r.parentId, parentName: r.parentId ? (nameMap.get(r.parentId) ?? null) : null,
+    })
+
+    if (!pg) {
+      const placements = await buildRows()
+      const allUsers = await db.select({ id: users.id, name: users.name }).from(users)
+      const nameMap = new Map(allUsers.map(u => [u.id, u.name]))
+      return placements.map(r => mapRow(r, nameMap))
+    }
+
+    const [countRow] = await db.select({ count: sql<number>`count(*)::int` })
       .from(pklPlacements)
       .innerJoin(students, eq(pklPlacements.studentId, students.id))
       .innerJoin(companies, eq(pklPlacements.companyId, companies.id))
+      .innerJoin(users, eq(students.userId, users.id))
+      .where(searchFilter)
 
-    const allUsers = await db
-      .select({ id: users.id, name: users.name })
-      .from(users)
-    const nameMap = new Map(allUsers.map((u) => [u.id, u.name]))
+    const total = countRow?.count ?? 0
+    const offset = (pg.page - 1) * pg.perPage
+    const placements = await buildRows(pg.perPage, offset)
+    const allUsers = await db.select({ id: users.id, name: users.name }).from(users)
+    const nameMap = new Map(allUsers.map(u => [u.id, u.name]))
+    const data = placements.map(r => mapRow(r, nameMap))
 
-    return placements.map((r) => ({
-      id: r.id,
-      companyName: r.companyName,
-      companyAddress: r.companyAddress,
-      startDate: r.startDate,
-      endDate: r.endDate,
-      status: r.status,
-      studentId: r.studentId,
-      studentName: nameMap.get(r.studentUserId) ?? '-',
-      nis: r.nis,
-      teacherId: r.teacherId,
-      teacherName: r.teacherId ? (nameMap.get(r.teacherId) ?? null) : null,
-      industrySupervisorId: r.industrySupervisorId,
-      industrySupervisorName: r.industrySupervisorId
-        ? (nameMap.get(r.industrySupervisorId) ?? null)
-        : null,
-      parentId: r.parentId,
-      parentName: r.parentId ? (nameMap.get(r.parentId) ?? null) : null,
-    }))
+    return { data, total, page: pg.page, perPage: pg.perPage, totalPages: Math.ceil(total / pg.perPage) || 1 }
   },
 
   async listByStudent(studentId: string) {

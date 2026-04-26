@@ -1,6 +1,7 @@
-import { eq } from 'drizzle-orm'
+import { eq, ilike, or, sql } from 'drizzle-orm'
 import { db } from '../db/index.ts'
 import { users, students } from '../db/schema/index.ts'
+import type { PaginationQuery, PaginatedResult } from '../utils/pagination.ts'
 
 export type CreateUserDto = {
   name: string
@@ -35,13 +36,51 @@ const USER_COLS = {
 }
 
 export const UserService = {
-  async listAll(role?: string) {
-    const rows = await db.select(USER_COLS).from(users).orderBy(users.createdAt)
-    return role ? rows.filter(r => r.role === role) : rows
+  async listAll(role?: string, pg?: PaginationQuery, search = ''): Promise<PaginatedResult<typeof USER_COLS extends Record<string, any> ? any : any> | any[]> {
+    if (!pg) {
+      // backward compat — no pagination, return plain array
+      const rows = await db.select(USER_COLS).from(users).orderBy(users.createdAt)
+      return role ? rows.filter(r => r.role === role) : rows
+    }
+
+    const conditions: any[] = []
+    if (role) conditions.push(eq(users.role, role as any))
+    if (search) conditions.push(or(ilike(users.name, `%${search}%`), ilike(users.email, `%${search}%`)))
+
+    const where = conditions.length > 0
+      ? conditions.reduce((a, b) => ({ ...a, ...b })) // drizzle and()
+      : undefined
+
+    // Use drizzle and() properly
+    const { and: drizzleAnd } = await import('drizzle-orm')
+    const whereClause = conditions.length > 1 ? drizzleAnd(...conditions) : conditions[0]
+
+    const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(users).where(whereClause)
+    const total = countRow?.count ?? 0
+    const offset = (pg.page - 1) * pg.perPage
+
+    const data = await db.select(USER_COLS).from(users)
+      .where(whereClause)
+      .orderBy(users.createdAt)
+      .limit(pg.perPage)
+      .offset(offset)
+
+    return { data, total, page: pg.page, perPage: pg.perPage, totalPages: Math.ceil(total / pg.perPage) || 1 }
   },
 
-  async listPending() {
-    return db.select(USER_COLS).from(users).where(eq(users.status, 'pending')).orderBy(users.createdAt)
+  async listPending(pg?: PaginationQuery, search = '') {
+    if (!pg) {
+      return db.select(USER_COLS).from(users).where(eq(users.status, 'pending')).orderBy(users.createdAt)
+    }
+    const { and: drizzleAnd, ilike: drizzleIlike, or: drizzleOr } = await import('drizzle-orm')
+    const searchFilter = search ? drizzleOr(drizzleIlike(users.name, `%${search}%`), drizzleIlike(users.email, `%${search}%`)) : undefined
+    const whereClause = searchFilter ? drizzleAnd(eq(users.status, 'pending'), searchFilter) : eq(users.status, 'pending')
+
+    const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(users).where(whereClause)
+    const total = countRow?.count ?? 0
+    const offset = (pg.page - 1) * pg.perPage
+    const data = await db.select(USER_COLS).from(users).where(whereClause).orderBy(users.createdAt).limit(pg.perPage).offset(offset)
+    return { data, total, page: pg.page, perPage: pg.perPage, totalPages: Math.ceil(total / pg.perPage) || 1 }
   },
 
   async getById(id: string) {

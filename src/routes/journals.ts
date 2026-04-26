@@ -9,14 +9,18 @@ const router = new Hono<AppEnv>()
 
 router.get('/', requireAuth('student', 'teacher', 'industry', 'admin'), async (c) => {
   const user = c.get('user')
-  const { page = '1', limit = '10', studentId } = c.req.query()
+  const { page = '1', limit, perPage, studentId, search, dateFrom, dateTo } = c.req.query()
+  const resolvedLimit = limit || perPage || '20'
   const resolvedStudentId = user.role === 'student' ? user.studentId! : studentId
   const result = await JournalService.list({
     userId: user.id,
     role: user.role,
     studentId: resolvedStudentId,
     page: parseInt(page),
-    limit: parseInt(limit),
+    limit: Math.min(100, parseInt(resolvedLimit)),
+    search: search || undefined,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
   })
   return c.json(result)
 })

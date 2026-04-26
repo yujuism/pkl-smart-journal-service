@@ -1,20 +1,72 @@
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, ilike, or } from 'drizzle-orm'
 import { db } from '../db/index.ts'
 import { students, users, pklPlacements, journals, majors, companies, feedbacks } from '../db/schema/index.ts'
 import type { JwtPayload } from '../middleware/auth.ts'
+import type { PaginationQuery, PaginatedResult } from '../utils/pagination.ts'
+
+type StudentRow = {
+  id: string; name: string; email: string; phone: string | null
+  nis: string; class: string; major: string; companyName: string | null; placementId: string | null
+}
+
+// Build paginated + searched student list with ABAC filter applied at DB level
+async function queryStudents(
+  pg: PaginationQuery,
+  search: string,
+  abacWhere: Parameters<typeof db.select>[0] extends never ? never : any,
+): Promise<PaginatedResult<StudentRow>> {
+  const searchFilter = search
+    ? or(
+        ilike(users.name, `%${search}%`),
+        ilike(students.nis, `%${search}%`),
+        ilike(majors.name, `%${search}%`),
+        ilike(companies.name, `%${search}%`),
+      )
+    : undefined
+
+  const where = searchFilter ? and(abacWhere, searchFilter) : abacWhere
+
+  const [countRow] = await db.select({ count: sql<number>`count(*)::int` })
+    .from(students)
+    .innerJoin(users, eq(students.userId, users.id))
+    .innerJoin(majors, eq(students.majorId, majors.id))
+    .leftJoin(pklPlacements, and(eq(pklPlacements.studentId, students.id), eq(pklPlacements.status, 'active')))
+    .leftJoin(companies, eq(pklPlacements.companyId, companies.id))
+    .where(where)
+
+  const total = countRow?.count ?? 0
+  const offset = (pg.page - 1) * pg.perPage
+
+  const data = await db.select({
+    id: students.id,
+    name: users.name,
+    email: users.email,
+    phone: users.phone,
+    nis: students.nis,
+    class: students.class,
+    major: majors.name,
+    companyName: companies.name,
+    placementId: pklPlacements.id,
+  }).from(students)
+    .innerJoin(users, eq(students.userId, users.id))
+    .innerJoin(majors, eq(students.majorId, majors.id))
+    .leftJoin(pklPlacements, and(eq(pklPlacements.studentId, students.id), eq(pklPlacements.status, 'active')))
+    .leftJoin(companies, eq(pklPlacements.companyId, companies.id))
+    .where(where)
+    .orderBy(users.name)
+    .limit(pg.perPage)
+    .offset(offset)
+
+  return { data, total, page: pg.page, perPage: pg.perPage, totalPages: Math.ceil(total / pg.perPage) || 1 }
+}
 
 export const StudentService = {
+  // Keep old listAll for internal use (stats, reports etc — no pagination needed)
   async listAll() {
     return db.select({
-      id: students.id,
-      name: users.name,
-      email: users.email,
-      phone: users.phone,
-      nis: students.nis,
-      class: students.class,
-      major: majors.name,
-      companyName: companies.name,
-      placementId: pklPlacements.id,
+      id: students.id, name: users.name, email: users.email, phone: users.phone,
+      nis: students.nis, class: students.class, major: majors.name,
+      companyName: companies.name, placementId: pklPlacements.id,
     }).from(students)
       .innerJoin(users, eq(students.userId, users.id))
       .innerJoin(majors, eq(students.majorId, majors.id))
@@ -22,81 +74,29 @@ export const StudentService = {
       .leftJoin(companies, eq(pklPlacements.companyId, companies.id))
   },
 
-  async listByTeacher(teacherId: string) {
-    return db.select({
-      id: students.id,
-      name: users.name,
-      email: users.email,
-      nis: students.nis,
-      class: students.class,
-      major: majors.name,
-      companyName: companies.name,
-      placementId: pklPlacements.id,
-    })
-      .from(students)
-      .innerJoin(users, eq(students.userId, users.id))
-      .innerJoin(majors, eq(students.majorId, majors.id))
-      .innerJoin(pklPlacements, and(
-        eq(pklPlacements.studentId, students.id),
-        eq(pklPlacements.teacherId, teacherId),
-        eq(pklPlacements.status, 'active'),
-      ))
-      .innerJoin(companies, eq(pklPlacements.companyId, companies.id))
-  },
+  // ABAC-aware paginated list
+  async listForUser(caller: JwtPayload, pg: PaginationQuery = { page: 1, perPage: 25 }, search = '') {
+    let abacWhere: any = undefined
 
-  // ABAC: industry sees only students at their company
-  async listByIndustry(industrySupervisorId: string) {
-    return db.select({
-      id: students.id,
-      name: users.name,
-      email: users.email,
-      nis: students.nis,
-      class: students.class,
-      major: majors.name,
-      companyName: companies.name,
-      placementId: pklPlacements.id,
-    })
-      .from(students)
-      .innerJoin(users, eq(students.userId, users.id))
-      .innerJoin(majors, eq(students.majorId, majors.id))
-      .innerJoin(pklPlacements, and(
-        eq(pklPlacements.studentId, students.id),
-        eq(pklPlacements.industrySupervisorId, industrySupervisorId),
+    if (caller.role === 'teacher') {
+      abacWhere = and(
+        eq(pklPlacements.teacherId, caller.id),
         eq(pklPlacements.status, 'active'),
-      ))
-      .innerJoin(companies, eq(pklPlacements.companyId, companies.id))
-  },
-
-  // ABAC: parent sees only their own child
-  async listByParent(parentId: string) {
-    return db.select({
-      id: students.id,
-      name: users.name,
-      email: users.email,
-      nis: students.nis,
-      class: students.class,
-      major: majors.name,
-      companyName: companies.name,
-      placementId: pklPlacements.id,
-    })
-      .from(students)
-      .innerJoin(users, eq(students.userId, users.id))
-      .innerJoin(majors, eq(students.majorId, majors.id))
-      .innerJoin(pklPlacements, and(
-        eq(pklPlacements.studentId, students.id),
-        eq(pklPlacements.parentId, parentId),
+      )
+    } else if (caller.role === 'industry') {
+      abacWhere = and(
+        eq(pklPlacements.industrySupervisorId, caller.id),
         eq(pklPlacements.status, 'active'),
-      ))
-      .innerJoin(companies, eq(pklPlacements.companyId, companies.id))
-  },
+      )
+    } else if (caller.role === 'parent') {
+      abacWhere = and(
+        eq(pklPlacements.parentId, caller.id),
+        eq(pklPlacements.status, 'active'),
+      )
+    }
+    // admin → no ABAC filter
 
-  // ABAC-aware list — picks correct query based on caller's system role
-  async listForUser(caller: JwtPayload) {
-    if (caller.role === 'admin') return StudentService.listAll()
-    if (caller.role === 'teacher') return StudentService.listByTeacher(caller.id)
-    if (caller.role === 'industry') return StudentService.listByIndustry(caller.id)
-    if (caller.role === 'parent') return StudentService.listByParent(caller.id)
-    return StudentService.listByTeacher(caller.id)
+    return queryStudents(pg, search, abacWhere)
   },
 
   // ABAC: verify caller is allowed to access a specific student
@@ -117,9 +117,9 @@ export const StudentService = {
   },
 
   async getStats(caller: JwtPayload) {
-    // Get scoped student IDs
-    const studentRows = await StudentService.listForUser(caller)
-    const studentIds = studentRows.map(s => s.id)
+    // Get scoped student IDs (fetch all, no pagination needed for stats)
+    const studentResult = await StudentService.listForUser(caller, { page: 1, perPage: 10000 })
+    const studentIds = studentResult.data.map(s => s.id)
     if (studentIds.length === 0) {
       return { totalStudents: 0, activeStudents: 0, totalJournals: 0, journalsThisWeek: 0, journalsTodayCount: 0, unreviewed: 0, studentsNoJournalToday: [] }
     }
@@ -168,7 +168,7 @@ export const StudentService = {
     const activeStudents = new Set(activePlacements.map(p => p.studentId)).size
 
     return {
-      totalStudents: studentIds.length,
+      totalStudents: studentResult.total,
       activeStudents,
       totalJournals: Number(counts?.total_journals ?? 0),
       journalsThisWeek: Number(counts?.journals_this_week ?? 0),
@@ -208,8 +208,8 @@ export const StudentService = {
   },
 
   async getUnreviewedJournals(caller: JwtPayload) {
-    const studentRows = await StudentService.listForUser(caller)
-    const studentIds = studentRows.map(s => s.id)
+    const studentResult = await StudentService.listForUser(caller, { page: 1, perPage: 10000 })
+    const studentIds = studentResult.data.map(s => s.id)
     if (studentIds.length === 0) return []
 
     const idList = studentIds.map(id => `'${id}'`).join(',')

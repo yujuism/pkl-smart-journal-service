@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { requireAuth, requirePermission } from '../middleware/auth.ts'
 import { PlacementService } from '../services/placement.service.ts'
+import { parsePagination } from '../utils/pagination.ts'
 import type { AppEnv } from '../types.ts'
 
 const router = new Hono<AppEnv>()
@@ -13,8 +14,10 @@ router.get('/my', requireAuth('student'), async (c) => {
 })
 
 router.get('/', requirePermission('placements:write'), async (c) => {
-  const rows = await PlacementService.listAll()
-  return c.json(rows)
+  const pg = parsePagination(c.req.query() as Record<string, string>)
+  const search = c.req.query('search') ?? ''
+  const result = await PlacementService.listAll(pg, search)
+  return c.json(result)
 })
 
 const createSchema = z.object({

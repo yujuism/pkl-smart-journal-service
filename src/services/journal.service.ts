@@ -1,4 +1,4 @@
-import { eq, and, desc, inArray, sql } from 'drizzle-orm'
+import { eq, and, or, desc, gte, lte, ilike, inArray, sql } from 'drizzle-orm'
 import { db } from '../db/index.ts'
 import { journals, students, pklPlacements, users, feedbacks, majors } from '../db/schema/index.ts'
 import { compileJournalEntry } from './ai.ts'
@@ -23,8 +23,8 @@ export type UpdateJournalDto = {
 }
 
 export const JournalService = {
-  async list(params: { userId: string; role: string; studentId?: string; page: number; limit: number }) {
-    const { page, limit, userId, role } = params
+  async list(params: { userId: string; role: string; studentId?: string; page: number; limit: number; search?: string; dateFrom?: string; dateTo?: string }) {
+    const { page, limit, userId, role, search, dateFrom, dateTo } = params
     const offset = (page - 1) * limit
 
     let allowedStudentIds: string[] | null = null
@@ -48,21 +48,35 @@ export const JournalService = {
     if (params.studentId) {
       // Explicit studentId filter (admin or teacher drilling into one student)
       if (allowedStudentIds !== null && !allowedStudentIds.includes(params.studentId)) {
-        return { data: [], page }
+        return { data: [], total: 0, page, perPage: limit, totalPages: 1 }
       }
       conditions.push(eq(journals.studentId, params.studentId))
     } else if (allowedStudentIds !== null) {
-      if (allowedStudentIds.length === 0) return { data: [], page }
+      if (allowedStudentIds.length === 0) return { data: [], total: 0, page, perPage: limit, totalPages: 1 }
       conditions.push(inArray(journals.studentId, allowedStudentIds))
     }
     // admin with no studentId filter → no condition, sees all
 
+    // Search filter (title or activityRaw)
+    if (search) {
+      conditions.push(or(ilike(journals.title, `%${search}%`), ilike(journals.activityRaw, `%${search}%`))!)
+    }
+    // Date range filter
+    if (dateFrom) conditions.push(gte(journals.date, dateFrom))
+    if (dateTo) conditions.push(lte(journals.date, dateTo))
+
+    const where = conditions.length ? and(...conditions) : undefined
+
+    const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(journals).where(where)
+    const total = countRow?.count ?? 0
+
     const rows = await db.select().from(journals)
-      .where(conditions.length ? and(...conditions) : undefined)
+      .where(where)
       .orderBy(desc(journals.date))
       .limit(limit)
       .offset(offset)
-    return { data: rows, page }
+
+    return { data: rows, total, page, perPage: limit, totalPages: Math.ceil(total / limit) || 1 }
   },
 
   async getById(id: string, accessor: { userId: string; role: string; studentId?: string | null }) {

@@ -2,7 +2,7 @@
   "name": "pkl-smart-journal-backend",
   "version": "1.0.0",
   "scripts": {
-    "dev": "bun --hot src/index.ts",
+    "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
     "db:push": "bunx drizzle-kit push",
