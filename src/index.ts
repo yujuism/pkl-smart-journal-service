@@ -14,6 +14,7 @@ import userRoutes from './routes/users.ts'
 import roleRoutes from './routes/roles.ts'
 import majorRoutes from './routes/majors.ts'
 import companyRoutes from './routes/companies.ts'
+import reportRoutes from './routes/reports.ts'
 
 const app = new Hono()
 
@@ -46,6 +47,7 @@ app.route('/api/users', userRoutes)
 app.route('/api/roles', roleRoutes)
 app.route('/api/majors', majorRoutes)
 app.route('/api/companies', companyRoutes)
+app.route('/api/reports', reportRoutes)
 
 app.onError((err, c) => {
   console.error(err)
