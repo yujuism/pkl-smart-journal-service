@@ -15,12 +15,23 @@ router.get('/student/:studentId', requireAuth('teacher', 'admin'), async (c) => 
 const triggerSchema = z.object({
   studentId: z.string().uuid(),
   placementId: z.string().uuid().optional(),
+  periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 })
 
 router.post('/trigger', requireAuth('teacher', 'admin'), zValidator('json', triggerSchema), async (c) => {
   try {
     const result = await EvaluationService.trigger(c.req.valid('json'))
     return c.json(result, 201)
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 404)
+  }
+})
+
+router.delete('/:id', requireAuth('teacher', 'admin'), async (c) => {
+  try {
+    await EvaluationService.delete(c.req.param('id') as string)
+    return c.json({ success: true })
   } catch (e) {
     return c.json({ error: (e as Error).message }, 404)
   }

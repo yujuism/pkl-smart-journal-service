@@ -12,6 +12,7 @@ export const aiEvaluations = pgTable('ai_evaluations', {
   analysis: text('analysis'),
   recommendation: text('recommendation', { enum: ['lanjut', 'perhatikan', 'pindah'] }),
   competencyScores: jsonb('competency_scores').$type<Record<string, number>>(),
+  companyName: text('company_name'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 })
 
