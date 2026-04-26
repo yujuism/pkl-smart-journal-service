@@ -63,7 +63,12 @@ Hasilkan JSON dengan format berikut (tanpa markdown code block):
 
 export type EvaluationResult = {
   score: number
-  analysis: string
+  analysis: string  // kept for backward compat
+  ringkasanKegiatan: string
+  kompetensiDikuasai: string
+  perkembangan: string
+  kendalaAdaptasi: string
+  kesiapanKerja: string
   recommendation: 'lanjut' | 'perhatikan' | 'pindah'
   competencyScores: Record<string, number>
 }
@@ -84,7 +89,7 @@ export async function evaluatePKLCompetency(params: {
     ? guidelines.competencies.map(c => `- ${c.name} (bobot ${c.weight}%): ${c.indicators.join(', ')}`).join('\n')
     : 'Tidak ada guideline tersedia'
 
-  const prompt = `Kamu adalah evaluator PKL SMK yang berpengalaman. Baca semua jurnal siswa berikut dan buat evaluasi komprehensif.
+  const prompt = `Kamu adalah evaluator PKL SMK yang berpengalaman. Baca semua jurnal siswa dan buat evaluasi terstruktur.
 
 Siswa: ${studentName}
 Jurusan: ${major}
@@ -95,21 +100,33 @@ ${guidelineText}
 Jurnal kegiatan:
 ${journalSummary}
 
-Hasilkan JSON evaluasi (tanpa markdown code block):
+Hasilkan JSON evaluasi (tanpa markdown code block). Setiap field harus diisi dengan narasi informatif 2-4 kalimat — BUKAN poin-poin, BUKAN singkat, tapi kalimat lengkap seperti laporan profesional:
 {
-  "score": <angka 0-100 berdasarkan kesesuaian kegiatan dengan kompetensi jurusan>,
-  "analysis": "Tulis narasi PANJANG dan DETAIL minimal 4-5 paragraf yang mencakup: (1) gambaran umum apa saja yang siswa kerjakan selama PKL, (2) kompetensi teknis spesifik apa yang sudah dikuasai dengan contoh konkret dari jurnal, (3) perkembangan siswa dari awal hingga akhir periode, (4) kendala yang dihadapi dan bagaimana siswa mengatasinya, (5) kesiapan siswa untuk dunia kerja. Jangan hanya menyebut angka atau poin singkat — ceritakan secara naratif seperti laporan pembimbing profesional.",
+  "score": <angka 0-100>,
+  "ringkasanKegiatan": "Gambaran umum apa saja yang dikerjakan siswa selama PKL — aktivitas utama, divisi/area kerja, jenis tugas yang diterima",
+  "kompetensiDikuasai": "Kompetensi teknis spesifik yang berhasil dikuasai siswa beserta contoh konkret dari jurnal — alat/prosedur/teknik apa yang dikuasai",
+  "perkembangan": "Bagaimana perkembangan siswa dari awal hingga akhir periode — apakah semakin mandiri, percaya diri, inisiatif meningkat, dsb",
+  "kendalaAdaptasi": "Kendala-kendala yang dihadapi siswa dan bagaimana cara mengatasinya — apakah siswa mampu beradaptasi dan problem solving dengan baik",
+  "kesiapanKerja": "Penilaian kesiapan siswa untuk dunia kerja — aspek teknis, sikap profesional, dan potensi karir di bidang ini",
   "recommendation": "<lanjut|perhatikan|pindah>",
   "competencyScores": { "<nama_kompetensi_sesuai_guideline>": <skor 0-100> }
 }`
 
   const text = await chat(prompt)
-  return parseJson<EvaluationResult>(text, {
+  const parsed = parseJson<EvaluationResult>(text, {
     score: 0,
     analysis: 'Evaluasi gagal diproses.',
+    ringkasanKegiatan: '',
+    kompetensiDikuasai: '',
+    perkembangan: '',
+    kendalaAdaptasi: '',
+    kesiapanKerja: '',
     recommendation: 'perhatikan',
     competencyScores: {},
   })
+  // backward compat: gabung semua jadi analysis juga
+  parsed.analysis = [parsed.ringkasanKegiatan, parsed.kompetensiDikuasai, parsed.perkembangan, parsed.kendalaAdaptasi, parsed.kesiapanKerja].filter(Boolean).join('\n\n')
+  return parsed
 }
 
 export async function generateWeeklyRecap(params: {
