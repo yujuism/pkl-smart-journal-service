@@ -4,6 +4,7 @@ import {
   students, users, majors, pklPlacements, companies,
   journals, feedbacks, aiEvaluations,
 } from '../db/schema/index.ts'
+import { generatePKLNarrativeReport } from './ai.ts'
 
 export const ReportService = {
   async generateStudentReport(studentId: string): Promise<string> {
@@ -27,7 +28,6 @@ export const ReportService = {
     const [placement] = await db.select({
       companyName: companies.name,
       companyAddress: companies.address,
-      companyPhone: companies.phone,
       startDate: pklPlacements.startDate,
       endDate: pklPlacements.endDate,
       teacherName: users.name,
@@ -53,267 +53,149 @@ export const ReportService = {
       .where(eq(journals.studentId, studentId))
       .orderBy(journals.date)
 
-    // ── Feedbacks per journal ─────────────────────────────────────────
-    const journalIds = journalRows.map(j => j.id)
-    let feedbackRows: { journalId: string; content: string; reviewerRole: string; reviewerName: string | null; createdAt: Date | null }[] = []
-    if (journalIds.length > 0) {
-      feedbackRows = await db.select({
-        journalId: feedbacks.journalId,
-        content: feedbacks.content,
-        reviewerRole: feedbacks.reviewerRole,
-        reviewerName: users.name,
-        createdAt: feedbacks.createdAt,
-      }).from(feedbacks)
-        .leftJoin(users, eq(feedbacks.reviewerId, users.id))
-        .where(eq(feedbacks.journalId, journalRows[0].id))
-    }
-
-    // Fetch all feedbacks in one query
-    const allFeedbacks: typeof feedbackRows = []
-    for (const jId of journalIds) {
-      const rows = await db.select({
-        journalId: feedbacks.journalId,
-        content: feedbacks.content,
-        reviewerRole: feedbacks.reviewerRole,
-        reviewerName: users.name,
-        createdAt: feedbacks.createdAt,
-      }).from(feedbacks)
-        .leftJoin(users, eq(feedbacks.reviewerId, users.id))
-        .where(eq(feedbacks.journalId, jId))
-      allFeedbacks.push(...rows)
-    }
-    const feedbackByJournal = new Map<string, typeof allFeedbacks>()
-    for (const fb of allFeedbacks) {
-      if (!feedbackByJournal.has(fb.journalId)) feedbackByJournal.set(fb.journalId, [])
-      feedbackByJournal.get(fb.journalId)!.push(fb)
-    }
-
     // ── Latest evaluation ─────────────────────────────────────────────
     const [latestEval] = await db.select().from(aiEvaluations)
       .where(eq(aiEvaluations.studentId, studentId))
       .orderBy(desc(aiEvaluations.createdAt))
       .limit(1)
 
-    // ── Aggregate stats ───────────────────────────────────────────────
-    const totalJournals = journalRows.length
-    const finalizedJournals = journalRows.filter(j => j.finalizedAt).length
-    const totalFeedbacks = allFeedbacks.length
-
-    // Unique obstacles & new things
-    const obstacles = journalRows
-      .filter(j => j.obstacle)
-      .map(j => ({ date: j.date, text: j.obstacle! }))
-    const newThings = journalRows
-      .filter(j => j.newThings)
-      .map(j => ({ date: j.date, text: j.newThings! }))
+    // ── Generate AI narrative ─────────────────────────────────────────
+    const narrative = await generatePKLNarrativeReport({
+      studentName: student.name,
+      major: student.major,
+      companyName: placement?.companyName ?? 'Tidak diketahui',
+      periodStart: placement?.startDate ?? journalRows[0]?.date ?? '',
+      periodEnd: placement?.endDate ?? journalRows[journalRows.length - 1]?.date ?? '',
+      journals: journalRows,
+      evaluationScore: latestEval?.score ?? undefined,
+      evaluationAnalysis: latestEval?.analysis ?? undefined,
+      competencyScores: (latestEval?.competencyScores as Record<string, number>) ?? undefined,
+    })
 
     const generatedAt = new Date().toLocaleDateString('id-ID', {
       day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
     })
 
-    // ── Build HTML ────────────────────────────────────────────────────
-    const evalSection = latestEval ? `
-      <section class="eval-section">
-        <h2>Hasil Evaluasi AI Terbaru</h2>
-        <div class="eval-card">
-          <div class="eval-score ${latestEval.score && latestEval.score >= 75 ? 'score-good' : latestEval.score && latestEval.score >= 50 ? 'score-mid' : 'score-bad'}">
-            <span class="score-num">${latestEval.score?.toFixed(0) ?? '–'}</span>
-            <span class="score-denom">/ 100</span>
-          </div>
-          <div class="eval-meta">
-            <p><strong>Periode:</strong> ${formatDate(latestEval.periodStart ?? '')} – ${formatDate(latestEval.periodEnd ?? '')}</p>
-            <p><strong>Rekomendasi:</strong> <span class="badge badge-${latestEval.recommendation}">${recoLabel(latestEval.recommendation ?? '')}</span></p>
-            ${latestEval.companyName ? `<p><strong>Perusahaan:</strong> ${esc(latestEval.companyName)}</p>` : ''}
-            <p><strong>Tanggal Evaluasi:</strong> ${new Date(latestEval.createdAt ?? '').toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' })}</p>
-          </div>
-        </div>
-        ${latestEval.analysis ? `<div class="analysis-box"><h4>Analisis AI</h4><p>${esc(latestEval.analysis)}</p></div>` : ''}
-        ${latestEval.competencyScores && Object.keys(latestEval.competencyScores).length > 0 ? `
-          <h4>Skor per Kompetensi</h4>
-          <div class="competency-grid">
-            ${Object.entries(latestEval.competencyScores as Record<string, number>)
-              .sort(([,a],[,b]) => b - a)
-              .map(([name, score]) => `
-                <div class="competency-item">
-                  <div class="competency-header">
-                    <span>${esc(name)}</span>
-                    <strong class="${score >= 75 ? 'score-good' : score >= 50 ? 'score-mid' : 'score-bad'}">${score}</strong>
-                  </div>
-                  <div class="progress-bar">
-                    <div class="progress-fill ${score >= 75 ? 'fill-good' : score >= 50 ? 'fill-mid' : 'fill-bad'}" style="width:${Math.min(score, 100)}%"></div>
-                  </div>
-                </div>
-              `).join('')}
-          </div>
-        ` : ''}
-      </section>
-    ` : ''
+    const totalJournals = journalRows.length
+    const finalizedJournals = journalRows.filter(j => j.finalizedAt).length
 
-    const journalSection = journalRows.map(j => {
-      const jFeedbacks = feedbackByJournal.get(j.id) ?? []
-      return `
-        <div class="journal-entry">
-          <div class="journal-header">
-            <div class="journal-date">${formatDate(j.date)}</div>
-            <div class="journal-title">${esc(j.title)}</div>
-            ${j.finalizedAt ? '<span class="badge-final">Finalized</span>' : '<span class="badge-draft">Draft</span>'}
-          </div>
-          ${j.activityCompiled || j.activityRaw ? `
-            <div class="journal-field">
-              <label>Kegiatan</label>
-              <p>${esc(j.activityCompiled ?? j.activityRaw)}</p>
-            </div>
-          ` : ''}
-          ${j.newThings ? `
-            <div class="journal-field">
-              <label>Hal Baru yang Dipelajari</label>
-              <p>${esc(j.newThings)}</p>
-            </div>
-          ` : ''}
-          ${j.obstacle ? `
-            <div class="journal-field">
-              <label>Kendala</label>
-              <p>${esc(j.obstacle)}</p>
-            </div>
-          ` : ''}
-          ${j.solution ? `
-            <div class="journal-field">
-              <label>Solusi</label>
-              <p>${esc(j.solution)}</p>
-            </div>
-          ` : ''}
-          ${j.rtl ? `
-            <div class="journal-field">
-              <label>Rencana Tindak Lanjut</label>
-              <p>${esc(j.rtl)}</p>
-            </div>
-          ` : ''}
-          ${jFeedbacks.length > 0 ? `
-            <div class="feedbacks">
-              ${jFeedbacks.map(fb => `
-                <div class="feedback-item">
-                  <span class="feedback-author">${esc(fb.reviewerName ?? fb.reviewerRole)} · ${roleLabel(fb.reviewerRole)}</span>
-                  <p>${esc(fb.content)}</p>
+    // ── Competency scores section ─────────────────────────────────────
+    const competencySection = latestEval?.competencyScores && Object.keys(latestEval.competencyScores).length > 0
+      ? `<div class="competency-grid">
+          ${Object.entries(latestEval.competencyScores as Record<string, number>)
+            .sort(([,a],[,b]) => b - a)
+            .map(([name, score]) => `
+              <div class="competency-item">
+                <div class="comp-header">
+                  <span>${esc(name)}</span>
+                  <strong class="${score >= 75 ? 'good' : score >= 50 ? 'mid' : 'bad'}">${score}</strong>
                 </div>
-              `).join('')}
-            </div>
-          ` : ''}
-        </div>
-      `
-    }).join('')
+                <div class="progress-bar">
+                  <div class="progress-fill ${score >= 75 ? 'fill-good' : score >= 50 ? 'fill-mid' : 'fill-bad'}" style="width:${Math.min(score,100)}%"></div>
+                </div>
+              </div>
+            `).join('')}
+        </div>`
+      : ''
 
     return `<!DOCTYPE html>
 <html lang="id">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Laporan PKL — ${esc(student.name)}</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #1a1a2e; background: #fff; line-height: 1.6; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a2e;background:#f8f9fa;line-height:1.7}
+
+    /* Print bar */
+    .print-bar{background:#1F4E79;padding:12px 40px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}
+    .print-bar p{color:rgba(255,255,255,0.7);font-size:12px}
+    .print-btn{background:white;color:#1F4E79;border:none;padding:8px 20px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:8px}
+    .print-btn:hover{background:#e8f0fe}
 
     /* Cover */
-    .cover { background: linear-gradient(135deg, #1F4E79 0%, #2E86C1 100%); color: white; padding: 48px 40px 40px; }
-    .cover-badge { font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; opacity: 0.7; margin-bottom: 12px; }
-    .cover-title { font-size: 28px; font-weight: 800; line-height: 1.2; margin-bottom: 6px; }
-    .cover-subtitle { font-size: 16px; opacity: 0.85; margin-bottom: 32px; }
-    .cover-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .cover-item { background: rgba(255,255,255,0.1); border-radius: 10px; padding: 12px 16px; }
-    .cover-item label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.65; display: block; margin-bottom: 4px; }
-    .cover-item span { font-size: 14px; font-weight: 600; }
-    .cover-generated { margin-top: 24px; font-size: 11px; opacity: 0.55; }
+    .cover{background:linear-gradient(135deg,#1F4E79 0%,#2980b9 100%);color:white;padding:48px 40px 40px}
+    .cover-badge{font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;opacity:.65;margin-bottom:10px}
+    .cover-name{font-size:32px;font-weight:900;line-height:1.1;margin-bottom:6px}
+    .cover-sub{font-size:15px;opacity:.8;margin-bottom:28px}
+    .meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .meta-item{background:rgba(255,255,255,.12);border-radius:10px;padding:12px 16px}
+    .meta-item label{font-size:10px;text-transform:uppercase;letter-spacing:1px;opacity:.6;display:block;margin-bottom:3px}
+    .meta-item span{font-size:13px;font-weight:600}
+    .cover-gen{margin-top:20px;font-size:11px;opacity:.5}
 
-    /* Stats bar */
-    .stats-bar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border-bottom: 2px solid #f0f0f0; }
-    .stat-item { text-align: center; padding: 20px; border-right: 1px solid #f0f0f0; }
-    .stat-item:last-child { border-right: none; }
-    .stat-num { font-size: 32px; font-weight: 800; color: #1F4E79; line-height: 1; }
-    .stat-label { font-size: 11px; color: #888; margin-top: 4px; }
+    /* Stats */
+    .stats{display:grid;grid-template-columns:repeat(4,1fr);background:white;border-bottom:2px solid #f0f0f0}
+    .stat{text-align:center;padding:18px;border-right:1px solid #f0f0f0}
+    .stat:last-child{border-right:none}
+    .stat-num{font-size:28px;font-weight:900;color:#1F4E79;line-height:1}
+    .stat-lbl{font-size:11px;color:#888;margin-top:3px}
 
-    /* Sections */
-    section { padding: 32px 40px; border-bottom: 1px solid #f0f0f0; }
-    section:last-child { border-bottom: none; }
-    h2 { font-size: 16px; font-weight: 700; color: #1F4E79; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #e8f0fe; }
-    h4 { font-size: 13px; font-weight: 700; color: #333; margin: 16px 0 10px; }
+    /* Main content */
+    .content{max-width:900px;margin:0 auto;padding:32px 20px}
 
-    /* Eval */
-    .eval-card { display: flex; align-items: center; gap: 20px; background: #f8f9ff; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
-    .eval-score { text-align: center; min-width: 80px; }
-    .score-num { font-size: 48px; font-weight: 900; line-height: 1; display: block; }
-    .score-denom { font-size: 13px; color: #999; }
-    .score-good { color: #16a34a; }
-    .score-mid { color: #d97706; }
-    .score-bad { color: #dc2626; }
-    .eval-meta p { margin-bottom: 4px; font-size: 13px; }
-    .analysis-box { background: #f8f9ff; border-left: 4px solid #1F4E79; padding: 14px 16px; border-radius: 0 8px 8px 0; margin-bottom: 16px; }
-    .analysis-box p { color: #444; line-height: 1.7; }
+    /* Cards */
+    .card{background:white;border-radius:14px;padding:28px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+    .card-title{font-size:15px;font-weight:800;color:#1F4E79;margin-bottom:16px;padding-bottom:10px;border-bottom:2px solid #e8f0fe;display:flex;align-items:center;gap:8px}
+    .card-title .icon{width:28px;height:28px;background:#e8f0fe;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;font-size:14px}
+
+    /* Eval card */
+    .eval-row{display:flex;align-items:center;gap:20px;background:#f8f9ff;border-radius:12px;padding:18px;margin-bottom:16px}
+    .score-big{text-align:center;min-width:80px}
+    .score-big .num{font-size:52px;font-weight:900;line-height:1;display:block}
+    .score-big .den{font-size:12px;color:#999}
+    .good{color:#16a34a}.mid{color:#d97706}.bad{color:#dc2626}
+    .badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700}
+    .badge-lanjut{background:#dcfce7;color:#16a34a}
+    .badge-perhatikan{background:#fef3c7;color:#d97706}
+    .badge-pindah{background:#fee2e2;color:#dc2626}
 
     /* Competency */
-    .competency-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .competency-item { background: #fafafa; border-radius: 8px; padding: 10px 12px; }
-    .competency-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 12px; }
-    .progress-bar { background: #e5e7eb; border-radius: 99px; height: 6px; }
-    .progress-fill { height: 6px; border-radius: 99px; }
-    .fill-good { background: #16a34a; }
-    .fill-mid { background: #d97706; }
-    .fill-bad { background: #dc2626; }
+    .competency-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .competency-item{background:#fafafa;border-radius:8px;padding:10px 12px}
+    .comp-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;font-size:12px}
+    .progress-bar{background:#e5e7eb;border-radius:99px;height:6px}
+    .progress-fill{height:6px;border-radius:99px}
+    .fill-good{background:#16a34a}.fill-mid{background:#d97706}.fill-bad{background:#dc2626}
 
-    /* Badges */
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; }
-    .badge-lanjut { background: #dcfce7; color: #16a34a; }
-    .badge-perhatikan { background: #fef3c7; color: #d97706; }
-    .badge-pindah { background: #fee2e2; color: #dc2626; }
-    .badge-final { display: inline-block; padding: 1px 6px; border-radius: 99px; font-size: 10px; font-weight: 600; background: #dcfce7; color: #16a34a; }
-    .badge-draft { display: inline-block; padding: 1px 6px; border-radius: 99px; font-size: 10px; font-weight: 600; background: #f3f4f6; color: #9ca3af; }
+    /* Narrative */
+    .narrative p{color:#374151;line-height:1.8;margin-bottom:14px;font-size:14px}
+    .narrative p:last-child{margin-bottom:0}
 
-    /* Journals */
-    .journals-section { padding: 32px 40px; }
-    .journals-section h2 { font-size: 16px; font-weight: 700; color: #1F4E79; margin-bottom: 20px; padding-bottom: 8px; border-bottom: 2px solid #e8f0fe; }
-    .journal-entry { margin-bottom: 24px; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; break-inside: avoid; }
-    .journal-header { display: flex; align-items: center; gap: 12px; background: #f8f9ff; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
-    .journal-date { font-size: 11px; font-weight: 700; color: #1F4E79; background: #e8f0fe; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
-    .journal-title { font-size: 14px; font-weight: 700; color: #1a1a2e; flex: 1; }
-    .journal-field { padding: 10px 16px; border-bottom: 1px solid #f3f4f6; }
-    .journal-field:last-child { border-bottom: none; }
-    .journal-field label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #9ca3af; display: block; margin-bottom: 3px; }
-    .journal-field p { color: #374151; font-size: 13px; line-height: 1.6; }
+    /* Lists */
+    .item-list{display:flex;flex-direction:column;gap:10px}
+    .item-card{background:#fafafa;border-radius:10px;padding:14px 16px;border-left:4px solid #1F4E79}
+    .item-card.kendala{border-left-color:#ef4444}
+    .item-card.rekomendasi{border-left-color:#8b5cf6}
+    .item-card.pencapaian{border-left-color:#10b981}
+    .item-card h4{font-size:13px;font-weight:700;color:#1a1a2e;margin-bottom:4px}
+    .item-card p{font-size:12px;color:#6b7280;line-height:1.5}
+    .item-card .tag{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;border-radius:99px;margin-bottom:6px}
+    .tag-sekali{background:#fef3c7;color:#d97706}
+    .tag-beberapa{background:#fee2e2;color:#ef4444}
+    .tag-berulang{background:#fecaca;color:#dc2626}
+    .pencapaian-list{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .pencapaian-item{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;font-size:12px;color:#166534;display:flex;align-items:flex-start;gap:8px}
+    .pencapaian-item::before{content:'✓';font-weight:900;color:#16a34a;flex-shrink:0}
 
-    /* Feedbacks */
-    .feedbacks { background: #fffbeb; border-top: 1px solid #fde68a; padding: 10px 16px; display: flex; flex-direction: column; gap: 8px; }
-    .feedback-item { background: white; border-radius: 8px; padding: 8px 12px; border-left: 3px solid #f59e0b; }
-    .feedback-author { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #d97706; display: block; margin-bottom: 3px; }
-    .feedback-item p { font-size: 12px; color: #374151; line-height: 1.5; }
+    /* Kesimpulan */
+    .kesimpulan{background:linear-gradient(135deg,#1F4E79,#2980b9);color:white;border-radius:14px;padding:24px 28px}
+    .kesimpulan h3{font-size:15px;font-weight:800;margin-bottom:12px;opacity:.85;text-transform:uppercase;letter-spacing:1px}
+    .kesimpulan p{font-size:14px;line-height:1.8;opacity:.92}
 
-    /* Summary lists */
-    .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .summary-card { background: #fafafa; border-radius: 10px; padding: 16px; }
-    .summary-card h4 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #6b7280; margin-bottom: 10px; }
-    .summary-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
-    .summary-list li { font-size: 12px; color: #374151; padding: 6px 10px; background: white; border-radius: 6px; border-left: 3px solid #1F4E79; line-height: 1.5; }
-    .summary-list li .item-date { font-size: 10px; color: #9ca3af; display: block; margin-bottom: 2px; }
-    .obstacle-item { border-left-color: #ef4444 !important; }
-    .new-thing-item { border-left-color: #10b981 !important; }
-
-    /* Print */
-    @media print {
-      body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-      .no-print { display: none; }
-      .journal-entry { break-inside: avoid; }
-      section { break-inside: avoid; }
+    @media print{
+      body{background:white}
+      .print-bar,.no-print{display:none}
+      .card{box-shadow:none;border:1px solid #e5e7eb}
+      .content{padding:0}
+      .card{break-inside:avoid}
     }
-
-    /* Print button */
-    .print-bar { background: #1F4E79; padding: 12px 40px; display: flex; align-items: center; justify-content: space-between; }
-    .print-bar p { color: rgba(255,255,255,0.7); font-size: 12px; }
-    .print-btn { background: white; color: #1F4E79; border: none; padding: 8px 20px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 8px; }
-    .print-btn:hover { background: #e8f0fe; }
   </style>
 </head>
 <body>
 
-<!-- Print bar -->
 <div class="print-bar no-print">
-  <p>Laporan PKL — ${esc(student.name)} · Buka di browser, lalu Ctrl+P / Cmd+P → Simpan sebagai PDF</p>
+  <p>Laporan PKL — ${esc(student.name)} · Ctrl+P / Cmd+P → Simpan sebagai PDF → Upload ke NotebookLM</p>
   <button class="print-btn" onclick="window.print()">
     <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
@@ -322,107 +204,129 @@ export const ReportService = {
   </button>
 </div>
 
-<!-- Cover -->
 <div class="cover">
-  <div class="cover-badge">Laporan Praktik Kerja Lapangan</div>
-  <div class="cover-title">${esc(student.name)}</div>
-  <div class="cover-subtitle">${esc(student.major)} · ${esc(student.class)}</div>
-  <div class="cover-grid">
-    <div class="cover-item">
-      <label>NIS</label>
-      <span>${esc(student.nis)}</span>
-    </div>
+  <div class="cover-badge">Laporan Naratif Praktik Kerja Lapangan</div>
+  <div class="cover-name">${esc(student.name)}</div>
+  <div class="cover-sub">${esc(student.major)} · ${esc(student.class)}</div>
+  <div class="meta-grid">
+    <div class="meta-item"><label>NIS</label><span>${esc(student.nis)}</span></div>
     ${placement ? `
-    <div class="cover-item">
-      <label>Tempat PKL</label>
-      <span>${esc(placement.companyName)}</span>
-    </div>
-    <div class="cover-item">
-      <label>Periode PKL</label>
-      <span>${formatDate(placement.startDate ?? '')} – ${formatDate(placement.endDate ?? '')}</span>
-    </div>
-    <div class="cover-item">
-      <label>Guru Pembimbing</label>
-      <span>${esc(placement.teacherName)}</span>
-    </div>
+    <div class="meta-item"><label>Tempat PKL</label><span>${esc(placement.companyName)}</span></div>
+    <div class="meta-item"><label>Periode</label><span>${formatDate(placement.startDate ?? '')} – ${formatDate(placement.endDate ?? '')}</span></div>
+    <div class="meta-item"><label>Guru Pembimbing</label><span>${esc(placement.teacherName)}</span></div>
     ` : ''}
   </div>
-  <div class="cover-generated">Laporan dibuat otomatis pada ${generatedAt}</div>
+  <div class="cover-gen">Laporan dibuat otomatis oleh AI pada ${generatedAt}</div>
 </div>
 
-<!-- Stats -->
-<div class="stats-bar">
-  <div class="stat-item">
-    <div class="stat-num">${totalJournals}</div>
-    <div class="stat-label">Total Jurnal</div>
-  </div>
-  <div class="stat-item">
-    <div class="stat-num">${finalizedJournals}</div>
-    <div class="stat-label">Jurnal Finalized</div>
-  </div>
-  <div class="stat-item">
-    <div class="stat-num">${totalFeedbacks}</div>
-    <div class="stat-label">Total Feedback</div>
-  </div>
+<div class="stats">
+  <div class="stat"><div class="stat-num">${totalJournals}</div><div class="stat-lbl">Total Jurnal</div></div>
+  <div class="stat"><div class="stat-num">${finalizedJournals}</div><div class="stat-lbl">Jurnal Finalized</div></div>
+  <div class="stat"><div class="stat-num">${latestEval?.score?.toFixed(0) ?? '–'}</div><div class="stat-lbl">Skor Evaluasi AI</div></div>
+  <div class="stat"><div class="stat-num">${narrative.pencapaianMenonjol.length}</div><div class="stat-lbl">Pencapaian Menonjol</div></div>
 </div>
 
-${evalSection}
+<div class="content">
 
-<!-- Summary Kendala & Hal Baru -->
-${(obstacles.length > 0 || newThings.length > 0) ? `
-<section>
-  <h2>Rekapitulasi Kendala & Pembelajaran</h2>
-  <div class="summary-grid">
-    ${obstacles.length > 0 ? `
-    <div class="summary-card">
-      <h4>🔴 Kendala yang Dihadapi (${obstacles.length})</h4>
-      <ul class="summary-list">
-        ${obstacles.map(o => `
-          <li class="obstacle-item">
-            <span class="item-date">${formatDate(o.date)}</span>
-            ${esc(o.text)}
-          </li>
-        `).join('')}
-      </ul>
+  <!-- Ringkasan Naratif -->
+  <div class="card">
+    <div class="card-title"><span class="icon">📖</span> Ringkasan Perjalanan PKL</div>
+    <div class="narrative">
+      ${narrative.ringkasan.split('\n').filter(p => p.trim()).map(p => `<p>${esc(p)}</p>`).join('')}
     </div>
-    ` : ''}
-    ${newThings.length > 0 ? `
-    <div class="summary-card">
-      <h4>🟢 Hal Baru yang Dipelajari (${newThings.length})</h4>
-      <ul class="summary-list">
-        ${newThings.map(n => `
-          <li class="new-thing-item">
-            <span class="item-date">${formatDate(n.date)}</span>
-            ${esc(n.text)}
-          </li>
-        `).join('')}
-      </ul>
-    </div>
-    ` : ''}
   </div>
-</section>
-` : ''}
 
-<!-- Journals -->
-<div class="journals-section">
-  <h2>Riwayat Jurnal Harian (${totalJournals} entri)</h2>
-  ${journalSection}
+  <!-- Evaluasi AI -->
+  ${latestEval ? `
+  <div class="card">
+    <div class="card-title"><span class="icon">🤖</span> Hasil Evaluasi AI</div>
+    <div class="eval-row">
+      <div class="score-big">
+        <span class="num ${latestEval.score && latestEval.score >= 75 ? 'good' : latestEval.score && latestEval.score >= 50 ? 'mid' : 'bad'}">${latestEval.score?.toFixed(0) ?? '–'}</span>
+        <span class="den">/ 100</span>
+      </div>
+      <div>
+        <p style="font-size:13px;margin-bottom:6px"><strong>Rekomendasi:</strong> <span class="badge badge-${latestEval.recommendation}">${recoLabel(latestEval.recommendation ?? '')}</span></p>
+        <p style="font-size:13px;color:#555;line-height:1.6">${esc(latestEval.analysis ?? '')}</p>
+      </div>
+    </div>
+    ${competencySection}
+  </div>
+  ` : ''}
+
+  <!-- Kompetensi yang Dikuasai -->
+  ${narrative.kompetensiDikuasai.length > 0 ? `
+  <div class="card">
+    <div class="card-title"><span class="icon">💡</span> Kompetensi yang Dikuasai</div>
+    <div class="item-list">
+      ${narrative.kompetensiDikuasai.map(k => `
+        <div class="item-card">
+          <h4>${esc(k.nama)}</h4>
+          <p>${esc(k.deskripsi)}</p>
+        </div>
+      `).join('')}
+    </div>
+  </div>
+  ` : ''}
+
+  <!-- Pencapaian Menonjol -->
+  ${narrative.pencapaianMenonjol.length > 0 ? `
+  <div class="card">
+    <div class="card-title"><span class="icon">🏆</span> Pencapaian Menonjol</div>
+    <div class="pencapaian-list">
+      ${narrative.pencapaianMenonjol.map(p => `<div class="pencapaian-item">${esc(p)}</div>`).join('')}
+    </div>
+  </div>
+  ` : ''}
+
+  <!-- Kendala & Solusi -->
+  ${narrative.kendalaUtama.length > 0 ? `
+  <div class="card">
+    <div class="card-title"><span class="icon">⚠️</span> Kendala & Solusi</div>
+    <div class="item-list">
+      ${narrative.kendalaUtama.map(k => `
+        <div class="item-card kendala">
+          <span class="tag ${k.frekuensi?.includes('berulang') ? 'tag-berulang' : k.frekuensi?.includes('beberapa') ? 'tag-beberapa' : 'tag-sekali'}">${esc(k.frekuensi)}</span>
+          <h4>${esc(k.kendala)}</h4>
+          <p><strong>Solusi:</strong> ${esc(k.solusi)}</p>
+        </div>
+      `).join('')}
+    </div>
+  </div>
+  ` : ''}
+
+  <!-- Rekomendasi Pengembangan -->
+  ${narrative.rekomendasiPengembangan.length > 0 ? `
+  <div class="card">
+    <div class="card-title"><span class="icon">🎯</span> Rekomendasi Pengembangan</div>
+    <div class="item-list">
+      ${narrative.rekomendasiPengembangan.map((r, i) => `
+        <div class="item-card rekomendasi">
+          <h4>Rekomendasi ${i + 1}</h4>
+          <p>${esc(r)}</p>
+        </div>
+      `).join('')}
+    </div>
+  </div>
+  ` : ''}
+
+  <!-- Kesimpulan -->
+  ${narrative.kesimpulan ? `
+  <div class="kesimpulan">
+    <h3>Kesimpulan</h3>
+    ${narrative.kesimpulan.split('\n').filter(p => p.trim()).map(p => `<p>${esc(p)}</p>`).join('')}
+  </div>
+  ` : ''}
+
 </div>
-
 </body>
 </html>`
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 function esc(str: string | null | undefined): string {
   if (!str) return ''
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')
 }
 
 function formatDate(d: string | null | undefined): string {
@@ -434,12 +338,5 @@ function recoLabel(r: string): string {
   if (r === 'lanjut') return 'Lanjutkan'
   if (r === 'perhatikan') return 'Perlu Perhatian'
   if (r === 'pindah') return 'Tindakan Diperlukan'
-  return r
-}
-
-function roleLabel(r: string): string {
-  if (r === 'teacher') return 'Guru Pembimbing'
-  if (r === 'industry') return 'Pembimbing Industri'
-  if (r === 'parent') return 'Orang Tua'
   return r
 }
