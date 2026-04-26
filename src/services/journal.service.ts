@@ -91,9 +91,12 @@ export const JournalService = {
       id: feedbacks.id,
       content: feedbacks.content,
       reviewerRole: feedbacks.reviewerRole,
+      reviewerName: users.name,
       source: feedbacks.source,
       createdAt: feedbacks.createdAt,
-    }).from(feedbacks).where(eq(feedbacks.journalId, id))
+    }).from(feedbacks)
+      .leftJoin(users, eq(feedbacks.reviewerId, users.id))
+      .where(eq(feedbacks.journalId, id))
 
     return { ...journal, feedbacks: journalFeedbacks }
   },
