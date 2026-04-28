@@ -73,6 +73,21 @@ router.post('/', requireAuth('admin'), zValidator('json', createUserSchema), asy
   return c.json(row, 201)
 })
 
+// Admin: update user
+router.put('/:id', requireAuth('admin'), zValidator('json', z.object({
+  name: z.string().min(2).optional(),
+  email: z.string().email().optional(),
+  phone: z.string().optional(),
+  password: z.string().min(6).optional(),
+})), async (c) => {
+  try {
+    const row = await UserService.update(c.req.param('id') as string, c.req.valid('json'))
+    return c.json(row)
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 404)
+  }
+})
+
 // Admin: update user role
 router.patch('/:id/role', requireAuth('admin'), zValidator('json', z.object({
   role: z.enum(['student', 'teacher', 'industry', 'parent', 'admin']),

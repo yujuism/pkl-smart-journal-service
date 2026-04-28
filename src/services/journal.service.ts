@@ -147,7 +147,7 @@ export const JournalService = {
 
     // Fire-and-forget WA notification
     if (dto.placementId) {
-      JournalService._notifyPlacement(dto.placementId, studentName, dto.date, dto.title)
+      JournalService._notifyPlacement(dto.placementId, journal.id, studentName, dto.date, finalTitle)
         .catch(e => console.error('WA notify failed:', (e as Error).message))
     }
 
@@ -212,7 +212,7 @@ export const JournalService = {
       const [student] = await db.select({ name: users.name })
         .from(students).innerJoin(users, eq(students.userId, users.id))
         .where(eq(students.id, studentId)).limit(1)
-      JournalService._notifyPlacement(journal.placementId, student?.name ?? 'Siswa', journal.date, journal.title)
+      JournalService._notifyPlacement(journal.placementId, updated.id, student?.name ?? 'Siswa', journal.date, journal.title)
         .catch(e => console.error('WA notify failed:', (e as Error).message))
     }
 
@@ -232,7 +232,7 @@ export const JournalService = {
           const [student] = await db.select({ name: users.name })
             .from(students).innerJoin(users, eq(students.userId, users.id))
             .where(eq(students.id, journal.studentId)).limit(1)
-          JournalService._notifyPlacement(journal.placementId, student?.name ?? 'Siswa', journal.date, journal.title)
+          JournalService._notifyPlacement(journal.placementId, journal.id, student?.name ?? 'Siswa', journal.date, journal.title)
             .catch(() => {})
         }
         console.log(`Auto-finalized journal ${journal.id}`)
@@ -242,7 +242,7 @@ export const JournalService = {
     }
   },
 
-  async _notifyPlacement(placementId: string, studentName: string, date: string, title: string) {
+  async _notifyPlacement(placementId: string, journalId: string, studentName: string, date: string, title: string) {
     const [placement] = await db.select().from(pklPlacements).where(eq(pklPlacements.id, placementId)).limit(1)
     if (!placement) return
 
@@ -256,9 +256,13 @@ export const JournalService = {
       studentName,
       date,
       title,
+      journalId,
       teacherPhone: await pick(placement.teacherId),
+      teacherId: placement.teacherId,
       industryPhone: await pick(placement.industrySupervisorId),
+      industrySupervisorId: placement.industrySupervisorId,
       parentPhone: await pick(placement.parentId),
+      parentId: placement.parentId,
     })
   },
 }

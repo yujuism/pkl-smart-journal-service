@@ -142,6 +142,22 @@ export const UserService = {
     return row
   },
 
+  async update(id: string, dto: { name?: string; email?: string; phone?: string; password?: string }) {
+    const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1)
+    if (!existing) throw new Error('User tidak ditemukan')
+    const updates: Record<string, unknown> = {}
+    if (dto.name) updates.name = dto.name
+    if (dto.email) updates.email = dto.email
+    if (dto.phone !== undefined) updates.phone = dto.phone || null
+    if (dto.password) updates.password = await hashPassword(dto.password)
+    const [row] = await db.update(users).set(updates).where(eq(users.id, id)).returning({
+      id: users.id, name: users.name, email: users.email,
+      role: users.role, status: users.status, phone: users.phone,
+      schoolId: users.schoolId, createdAt: users.createdAt,
+    })
+    return row
+  },
+
   async delete(id: string) {
     await db.delete(users).where(eq(users.id, id))
   },
